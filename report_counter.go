@@ -14,12 +14,12 @@ func main() {
 	}
 	id, err := strconv.ParseInt(os.Args[1], 10, 64)
 	if err != nil {
-		fmt.Println("id param error\n")
+		fmt.Printf("id param error\n")
 		return
 	}
 	value, err := strconv.ParseInt(os.Args[2], 10, 64)
 	if err != nil {
-		fmt.Println("value param error\n")
+		fmt.Printf("value param error\n")
 		return
 	}
 	gomonitor.Add(int(id), value)
