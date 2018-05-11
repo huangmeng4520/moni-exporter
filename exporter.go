@@ -44,6 +44,8 @@ type appVariable struct {
 	AttrMap    sync.Map
 }
 
+// value contains a type(t) and value(v)
+// type : 0-counter 1-gauge
 type AttrValue struct {
 	t int
 	v int64
@@ -166,6 +168,8 @@ func updateAttrCache(ms int64) {
 	}
 }
 
+// HandleMetrics:
+// HTTP endpoints for Prometheus
 func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	appVar.Log.Infof("receive req from %s", r.RemoteAddr)
 
@@ -205,6 +209,7 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, reportData)
 }
 
+// MonitorServer:
 // run script to monitor server base
 // like network, cpu, mem, ...
 func MonitorServer() {
@@ -231,7 +236,6 @@ func main() {
 		return
 	}
 
-	bExit := false
 	go func() {
 		sigs := make(chan os.Signal, 1)
 		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -240,7 +244,6 @@ func main() {
 			{
 				appVar.Log.Warnf("receive exit signal!")
 				appVar.HttpSvr.Shutdown(nil)
-				bExit = true
 			}
 		}
 	}()
