@@ -225,6 +225,7 @@ func MonitorServer() {
 				appVar.Log.Warnf("cmd exec failed, err=%v", err)
 			}
 		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
