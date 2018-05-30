@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"os/exec"
 	"net/http"
+	"sync/atomic"
 
 	"github.com/BurntSushi/toml"
 	"github.com/sirupsen/logrus"
@@ -33,15 +34,18 @@ type appConfig struct {
 }
 
 type appVariable struct {
-	Log        *logrus.Logger
-	HttpSvr    *http.Server
-	LocalIp    string
+	Log           *logrus.Logger
+	HttpSvr       *http.Server
+	LocalIp       string
 	// Time(ms) for update cache
-	AttrTime   int64
-	// Cache for last minute 
-	// key   : attrId
-	// value : AttrValue
-	AttrMap    sync.Map
+	AttrMtime     int64
+	// AttrMapList : Cache for last 1 minute and 2 minute
+	//   key   : attrId
+	//   value : AttrValue
+	AttrMapList   [2]sync.Map
+	AttrMapIndex  int
+	// Update lock
+	AttrLock      *sync.RWMutex
 }
 
 // value contains a type(t) and value(v)
@@ -59,7 +63,9 @@ var (
 
 func init() {
 	appFiniCb = make([]func(), 0)
-	appVar.AttrTime = 0
+	appVar.AttrMtime = 0
+	appVar.AttrMapIndex = 0
+	appVar.AttrLock = new(sync.RWMutex)
 }
 
 func appInit() error {
@@ -144,12 +150,16 @@ func getLocalIp() (string, error) {
 	return "", err
 }
 
-func updateAttrCache(ms int64) {
-	// update time
-	appVar.AttrTime = ms
-	// update value (delete first and update next)
-	appVar.AttrMap.Range(func(k, v interface{}) bool {
-		appVar.AttrMap.Delete(k)
+func updateAttrCache() {
+	appVar.AttrLock.Lock()
+	defer appVar.AttrLock.Unlock()
+	// update value (delete not exist key first)
+	idxToUpdate := (appVar.AttrMapIndex + 1) % 2
+	appVar.AttrMapList[idxToUpdate].Range(func(k, v interface{}) bool {
+		key, _ := k.(int)
+		if rc := gomonitor.Get(key); rc < 0 {
+			appVar.AttrMapList[idxToUpdate].Delete(key)
+		}
 		return true
 	})
 	row := gomonitor.MaxRow()
@@ -162,10 +172,12 @@ func updateAttrCache(ms int64) {
 					t: t,
 					v: v,
 				}
-				appVar.AttrMap.Store(id, attrVal)
+				appVar.AttrMapList[idxToUpdate].Store(id, attrVal)
 			}
 		}
 	}
+	// update finished, change the index
+	appVar.AttrMapIndex++
 }
 
 // HandleMetrics:
@@ -176,8 +188,11 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	// update cache every minute
 	now := time.Now().Unix()
 	ms := (now / 60) * 60 * 1000
-	if ms > appVar.AttrTime {
-		updateAttrCache(ms)
+	if ms > appVar.AttrMtime {
+		if atomic.CompareAndSwapInt64(&appVar.AttrMtime, appVar.AttrMtime, ms) {
+			appVar.Log.Infof("update cache, before update AttrMapIndex=%d", appVar.AttrMapIndex)
+			updateAttrCache()
+		}
 	}
 
 	reportData := ""
@@ -185,7 +200,16 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	tmp := fmt.Sprintf("# HELP monitor_0_value n/a\n# TYPE monitor_0_value gauge\nmonitor_0_value{host=\"%s\"} 1\n", appVar.LocalIp)
 	reportData += tmp
 
-	appVar.AttrMap.Range(func(k, v interface{}) bool {
+	appVar.AttrLock.RLock()
+	defer appVar.AttrLock.RUnlock()
+
+	idxToRead := appVar.AttrMapIndex % 2
+	idxToCmp := (appVar.AttrMapIndex + 1) % 2
+	isRestart := true
+	if appVar.AttrMapIndex > 1 {
+		isRestart = false
+	}
+	appVar.AttrMapList[idxToRead].Range(func(k, v interface{}) bool {
 		key, _ := k.(int)
 		val, _ := v.(AttrValue)
 		switch val.t {
@@ -194,14 +218,26 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 			metricName := fmt.Sprintf("monitor_%d_total", key)
 			helpStr := fmt.Sprintf("# HELP %s n/a\n", metricName)
 			typeStr := fmt.Sprintf("# TYPE %s counter\n", metricName)
-			valStr := fmt.Sprintf("%s{host=\"%s\"} %d %d\n", metricName, appVar.LocalIp, val.v, appVar.AttrTime)
-			reportData += fmt.Sprintf("%s%s%s", helpStr, typeStr, valStr)
+			reportData += fmt.Sprintf("%s%s", helpStr, typeStr)
+			if !isRestart {
+				// If report a non-zero counter straightly, delta(metric{lable="xxx"}[$interval]) will get zero result
+				// To resolve this problem, we report a zero value in last 6 minite (to support $interval=5m)
+				_, ok := appVar.AttrMapList[idxToCmp].Load(key)
+				if !ok {
+					for minute := int64(6); minute > 0; minute-- {
+						valStr := fmt.Sprintf("%s{host=\"%s\"} %d %d\n", metricName, appVar.LocalIp, 0, appVar.AttrMtime - minute * 60 * 1000)
+						reportData += fmt.Sprintf("%s", valStr)
+					}
+				}
+			}
+			valStr := fmt.Sprintf("%s{host=\"%s\"} %d %d\n", metricName, appVar.LocalIp, val.v, appVar.AttrMtime)
+			reportData += fmt.Sprintf("%s", valStr)
 		case 1:
 			// gauge
 			metricName := fmt.Sprintf("monitor_%d_value", key)
 			helpStr := fmt.Sprintf("# HELP %s n/a\n", metricName)
 			typeStr := fmt.Sprintf("# TYPE %s gauge\n", metricName)
-			valStr := fmt.Sprintf("%s{host=\"%s\"} %d %d\n", metricName, appVar.LocalIp, val.v, appVar.AttrTime)
+			valStr := fmt.Sprintf("%s{host=\"%s\"} %d %d\n", metricName, appVar.LocalIp, val.v, appVar.AttrMtime)
 			reportData += fmt.Sprintf("%s%s%s", helpStr, typeStr, valStr)
 		}
 		return true
