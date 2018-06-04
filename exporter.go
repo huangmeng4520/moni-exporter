@@ -256,12 +256,12 @@ func MonitorServer() {
 		if now - minute == 60 {
 			minute = now
 			cmd := exec.Command("/usr/bin/env", "python", appCfg.SvrMonitorFile)
-			err := cmd.Start()
+			err := cmd.Run()
 			if err != nil {
 				appVar.Log.Warnf("cmd exec failed, err=%v", err)
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

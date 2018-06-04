@@ -43,13 +43,13 @@ static int init() {
 		return -2;
 	}
 	const int size = g_row * g_col * sizeof(Node);
-	int shmid = shmget(g_key, size, SHM_R|SHM_W);
+	int shmid = shmget(g_key, size, 0666);
 	if (shmid == -1) {
 		if (errno != ENOENT) {
 			initialized = 0;
 			return -3;
 		}
-		shmid = shmget(g_key, size, SHM_R|SHM_W|IPC_CREAT);
+		shmid = shmget(g_key, size, 0666|IPC_CREAT);
 		if (shmid == -1) {
 			initialized = 0;
 			return -4;
