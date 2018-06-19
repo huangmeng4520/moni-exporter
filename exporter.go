@@ -37,6 +37,7 @@ type appVariable struct {
 	Log           *logrus.Logger
 	HttpSvr       *http.Server
 	LocalIp       string
+	Exit          bool
 	// Time(ms) for update cache
 	AttrMtime     int64
 	// AttrMapList : Cache for last 1 minute and 2 minute
@@ -63,6 +64,7 @@ var (
 
 func init() {
 	appFiniCb = make([]func(), 0)
+	appVar.Exit = false
 	appVar.AttrMtime = 0
 	appVar.AttrMapIndex = 0
 	appVar.AttrLock = new(sync.RWMutex)
@@ -245,23 +247,27 @@ func HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, reportData)
 }
 
-// MonitorServer:
+// MonitorServerLoop:
 // run script to monitor server base
 // like network, cpu, mem, ...
-func MonitorServer() {
-	minute := (time.Now().Unix() / 60) * 60
+func MonitorServerLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
 	for {
-		// exec every minute
-		now := time.Now().Unix()
-		if now - minute == 60 {
-			minute = now
-			cmd := exec.Command("/usr/bin/env", "python", appCfg.SvrMonitorFile)
-			err := cmd.Run()
-			if err != nil {
-				appVar.Log.Warnf("cmd exec failed, err=%v", err)
-			}
+		if appVar.Exit {
+			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ticker.C:
+			go func() {
+				appVar.Log.Warnf("cmd exec begin")
+				cmd := exec.Command("/usr/bin/env", "python", appCfg.SvrMonitorFile)
+				err := cmd.Run()
+				if err != nil {
+					appVar.Log.Warnf("cmd exec failed, err=%v", err)
+				}
+			}()
+		}
 	}
 }
 
@@ -280,12 +286,13 @@ func main() {
 		default:
 			{
 				appVar.Log.Warnf("receive exit signal!")
+				appVar.Exit = true
 				appVar.HttpSvr.Shutdown(nil)
 			}
 		}
 	}()
 
-	go MonitorServer()
+	go MonitorServerLoop()
 
 	appVar.Log.Warnf("moni-exporter | server restart!")
 
